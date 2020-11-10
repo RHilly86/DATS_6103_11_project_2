@@ -5,7 +5,7 @@ from PIL import Image
 from io import BytesIO
 from tqdm import tqdm
 
-cares_bot = pd.read_csv("project_2/data/cares_bot_image_urls.csv", names=["images"],
+cares_bot = pd.read_csv("C:/Users/Rober/DATS_6103/project_2/data/cares_bot_image_urls.csv", names=["images"],
                         skiprows=1)
 
 image_requests = cares_bot["images"].apply(requests.get)
