@@ -1,0 +1,578 @@
+---
+title: "CARES Bot Text Analysis"
+author: "Robert Hilly"
+date: "11/8/2020"
+output: html_document
+---
+
+## Libraries for analysis
+
+```{r}
+library(reticulate) # to interplay R and Python code
+library(ggplot2) # for plotting
+library(dplyr) # for data manipulation
+library(tidytext) # for sentiment analysis
+theme_set(theme_minimal())
+use_condaenv()
+```
+
+```{python}
+import pytesseract # for extracting text from images
+import pandas as pd
+import re # for regular expressions
+from tqdm import tqdm # for displaying a progress bar
+from spacy.tokenizer import Tokenizer # for tokenizing sentences into unigrams
+from spacy.lang.en import English # for English words
+import numpy as np
+import nltk # NLP library
+from nltk.util import ngrams # for converting sentences into ngrams
+from nltk import word_tokenize # for tokenizing sentences
+from nltk.corpus import stopwords # for removing stopwords
+from nltk.tokenize import punkt # for removing punctuation
+```
+
+## CARES Bot Analysis
+
+Back in March 27th, the US government passed the Coronavirus Aid, Relief, and Economic Security (CARES) Act in response to the ongoing pandemic. Unemployment benefits increased to \$600 a week for four months and benefits were extended to furloughed workers and other kinds of workers who found it difficult to continue working during the pandemic. The CARES Act also provided a one-time \$1200 stimulus check to all Americans and allowed people to receive an additional \$500 for each child dependent they had.
+
+It also appears that the CARES Act was effective in alleviating poverty. Indeed, a study from a group of researchers at Columbia University found that the CARES Act prevented about 12 million people from going into poverty.
+
+To better understand what Americans thought about the CARES Act, Data For Progress, a liberal polling firm, surveyed registered voters in July and asked how the provisions in the CARES Act impacted their lives. If a respondent stated that they either received a \$1200 stimulus check or went on unemployment at the start of the pandemic, they were then asked, "What was the effect of receiving this additional money had on you?" (**NOTE: The question has since changed to "How has losing or going without more aid impacted you?" since the provisions in the CARES Act have not been renewed nor has Congress passed more aid for Americans since**).
+
+After fielding the survey, Data For Progress created a Twitter bot, \@ExtendCaresUI, that shares anonymous responses from their survey. Below is an example of what an image looks like:
+
+![](images/example_image.png)
+
+Open-ended responses in surveys can give political scientists, pollsters, and others who study politics insight into what people are thinking, which can lead to formulating research questions on subjects such as voter behavior, polarization, etc. However, while typical survey questions such as asking a respondent - "On a scale from 1 - 10, do you approve of the Affordable Care Act" are readily easy to analyze as the data will come in a tabular format, extracting and analyzing text data can prove challenging. Moreover, while text data ostensibly carries useful insights, text data tends to be noisier than other forms of data. However, even with these challenges, text data can be extracted and analyzed.
+
+For this project, we'll be scraping the Twitter feed of CARES Bot and performing basic text analysis and sentiment to try and understand how the CARES Act has effected these voters and what kinds of words different types of voters use when discussing the impact of the CARES Act.
+
+## Scraping Tweets from CARES Bot's Twitter Feed
+
+Before extracting the text from the images, we'll need to first scrape CARES Bot's Twitter feed. To do this, I'll use the `tweepy` library, which allows users to interact with Twitter's API. To see the code, go to `pull_tweets.py`, which is under `DATS_6103/project_2/code`. Below, is an outline of what we did to extract the data from Twitter:
+
+-   Authenticate ourselves to Twitter through `tweepy`.
+
+-   Iteratively scrape through all of the tweets and append to a list.
+
+-   Since the scraped tweets are in a deeply nested JSON string, use the `json_normalize()` function from `pandas`, specifying the path of the data we want (in this case, we want each image's URL).
+
+-   Save the image URLs into a `Series` then write out to a CSV.
+
+## Extracting the Text from the Images
+
+```{python}
+# This data is the output from scraping CARES Bot's Twitter feed
+cares_bot = pd.read_csv("C:/Users/Rober/DATS_6103/project_2/data/cares_bot_image_urls.csv", names=["images"], skiprows=1)
+cares_bot.head()
+```
+
+Now, to extract the text from the image itself, we'll use `pytesseract`, which is a library that wraps around Google's `tesseract` library. Using optical character recognition (OCR), `tesseract` extracts text from images.
+
+Since we have a `DataFrame` of URLs, we'll use the `requests` package to make a request to each image's URL. The code to do this is saved as `pull_text.py` under `DATS_6103/project_2/code`. Below is the process we took to extract the text from each image:
+
+-   Apply `requests.get()` to each row of `cares_bot`.
+
+-   Loop through each requested URL and:
+
+    -   Open the image using `PIL`, a Python library that allows you to open/manipulate images.
+
+    -   Extract the text from the image and convert to a string.
+
+    -   Append the string to a list.
+
+-   Convert the list of text data to a `DataFrame`.
+
+-   Write the `DataFrame` to a CSV file.
+
+## Converting the text into a `DataFrame`
+
+Below, is the first row of the output of `pull_text.py`:
+
+```{python}
+cares_bot_survey_data = pd.read_csv("C:/Users/Rober/DATS_6103/project_2/data/cares_bot_survey_data.csv")
+
+cares_bot_survey_data["0"].iloc[0]
+```
+
+As of now, all we have is a string representation of the image. In order for us to understand what words are being used to describe the impact of the CARES Act and what words different kinds of voters use in relation to it. Therefore, our transformed dataset should contain the following columns:
+
+-   The respondent's answer to the question.
+
+-   The respondent's self-reported age.
+
+-   The respondent's self-reported income bracket.
+
+To extract this information, we'll use regular expressions to extract the relevant parts of each string and convert the data into a `DataFrame`.
+
+Through some trial and error, we settled on the following regular expressions:
+
+-   `response: (?<=\?) (.*) Age` - Extract any characters that follow a question mark.
+
+-   `age: Age: (\d+)`  - Extract the respondent's age (i.e. we want to extract the number "65" from "Age: 65".
+
+-   `income: Income: [Under|More than|\$]*\d+,?\d+ [-? \$\d+,?\d+]*` - Extract the respondent's income bracket. While all income brackets are preceded by "Income:", they can either be followed by "Under", "More than" or a "\$". To account for this, we create a character class with square brackets and add a `*`, telling Python that we want to match this pattern zero or more times. The next part of the regular expression will capture income brackets that don't have a range (i.e. Under \$25,000 or More than \$150,000), while the last part will capture the upper bound of an income bracket (i.e. \$50,001 - \$75,000).
+
+-   `response_pt_2: (.*?) Age` - Initially, images shared by CARES Bot did have the question that was asked of respondents. This regular expression will capture those instances.
+
+Now, let's apply our regular expressions to the parts of each string we want:
+
+```{python}
+# Apply our regexes to each part of the survey response, saving everything into a dictionary where the format goes column_name: part of survey response
+cares_bot_survey_data_extracted = {
+  "response": cares_bot_survey_data["0"].str.extract(r"(?<=\?) (.*) Age", re.IGNORECASE, expand=False).str.strip(),
+  
+  "age": pd.to_numeric(cares_bot_survey_data["0"].str.extract(r"Age: (\d+)", re.IGNORECASE, expand=False).str.strip()),
+  
+  "income": cares_bot_survey_data["0"].str.extract(r"(Income: [Under|More than|\$]*\d+,?\d+ [-? \$\d+,?\d+]*)",
+  re.IGNORECASE, expand=False).str.strip(),
+  
+  "response_pt_2": cares_bot_survey_data["0"].str.extract(r"(.*?) Age", re.IGNORECASE, expand=False)}
+
+# Convert the dictionary into a dataframe
+cares_bot_survey_data_extracted = pd.DataFrame(cares_bot_survey_data_extracted)
+
+# Take a look at the first few rows of data to make sure that everything looks good
+cares_bot_survey_data_extracted.head(10)
+```
+
+Now, let's check if we have anything missing data:
+
+```{python}
+# Ugh there is some missing data
+# While I'm not worried about age as there is only missing value, you should look into response and age (response is the priority)
+cares_bot_survey_data_extracted.isna().sum()
+```
+
+Here, we are missing 170 survey responses from our dataset. This is due to these responses being captured in `response_pt_2` as you can see below:
+
+```{python}
+cares_bot_survey_data_extracted[cares_bot_survey_data_extracted["response"].isna()][["age", "income", "response_pt_2"]]
+```
+
+Let's shift this data over to `response`:
+
+```{python}
+cares_bot_survey_data_extracted.loc[1714:, "response"] = cares_bot_survey_data_extracted.loc[1714:, "response_pt_2"]
+```
+
+And check to see how many missing values we have:
+
+```{python}
+cares_bot_survey_data_extracted.isna().sum()
+```
+
+Since we only have one missing row, let's drop it from our dataset:
+
+```{python}
+cares_bot_survey_data_extracted.dropna(inplace=True)
+```
+
+Before, we start analyzing our data, let's also create age ranges based on the distribution of ages we have in `age` as this will make it easy for us to analyze if different age demographics use different kinds of words to describe the CARES Act:
+
+```{python}
+cares_bot_survey_data_extracted["age_range"] = pd.cut(cares_bot_survey_data_extracted["age"], 
+          bins=[17, 24, 34, 44, 54, 64, np.inf],
+          labels=["18-24", "25-34", "35-44", 
+          "45-54", "55-64", "65+"])
+                                               
+cares_bot_survey_data_extracted["age_range"]  
+```
+
+## Tokenizing survey responses
+
+Tokenization is the process of splitting up a sentence into its individual components (i.e. words, punctuation, spaces, etc). We'll use `spacy`, a popular NLP library, to tokenize our responses into "unigrams", or individual words:
+
+```{python}
+# Construct a tokenizer with the default settings for English words
+nlp = English()
+tokenizer = nlp.Defaults.create_tokenizer(nlp)
+
+# Apply the tokenizer to each response
+unigrams = cares_bot_survey_data_extracted["response"].apply(lambda x: tokenizer(str(x)))
+unigrams.head()
+```
+
+Great! We've just tokenized all of our responses. However, we're not finished yet. Since our tokenizer did not remove punctuation or white space, we'll need to remove occurrences of both as they aren't useful for our analysis.
+
+Moreover, our tokenizer did not filter out "stop words", which are words that aren't useful for analysis (i.e. words such as "I", "you", "or", "they", etc). Below, we'll define a function to filter out these tokens and convert each token to lowercase:
+
+```{python}
+# Tokens in spacy have some handy attributes so we'll use those when filtering out stop words and punctuation
+def remove_stopwords_punct(doc):
+    return [token.lower_ for token in doc if not token.is_punct | token.is_space |  token.is_stop]
+```
+
+```{python}
+unigrams = unigrams.apply(remove_stopwords_punct)
+unigrams.head()
+```
+
+In the output, we notice that there are some characters that shouldn't be in our tokens (1, which may be `pytesseract` mistaking it for the letter "I" and a pipe character "\|"). Let's create another function to remove these tokens and apply it our tokenized survey responses:
+
+```{python}
+def remove_chars(words):
+  return [word for word in words if word not in ("1", "|")]
+```
+
+```{python}
+unigrams = unigrams.apply(remove_chars)
+unigrams.head()
+```
+
+Now that everything looks good, let's create a deep copy of `cares_bot_survey_data_extracted`, assign it to `cares_bot_unigrams`, and then create a column called `tokens`, which contains our unigrams:
+
+```{python}
+# Add the tokens Series to our original DataFrame
+cares_bot_unigrams = cares_bot_survey_data_extracted.copy()
+cares_bot_unigrams["tokens"] = unigrams
+
+cares_bot_unigrams["tokens"].head()
+```
+
+Currently, `tokens` is a `Series` of lists, which means that we can't attribute what kinds of words different age groups or income brackets use. To fix this, we'll use the `DataFrame.explode()` method which takes a column
+
+Since `tokens` is currently a `Series` of lists, we can't currently attribute what kinds of words different age groups or income brackets use. To do this, we'll use the `DataFrame.explode()` method, which takes a `Series` of lists/tuples and unnests each element of the list/tuple:
+
+```{python}
+# Unnest each token into its own row, while retaining the
+# index of its original row
+cares_bot_unigrams = cares_bot_unigrams.explode("tokens")
+
+cares_bot_unigrams["tokens"].head()
+```
+
+## The most frequently occurring words
+
+Let's read in `cares_bot_unigrams` into R so that we can create visualizations to better understand the data:
+
+```{r}
+cares_bot_unigrams <- py$cares_bot_unigrams
+
+# Since R doesn't like row indexes that repeat, it'll automatically put our data into a list. Here, we'll just flatten the list and extract the column data so we can access the columns like we usually would
+cares_bot_unigrams <- tibble(
+  response = unlist(cares_bot_unigrams$response),
+  age = unlist(cares_bot_unigrams$age),
+  income = unlist(cares_bot_unigrams$income),
+  tokens = unlist(cares_bot_unigrams$tokens),
+  age_range = as.character(unlist(cares_bot_unigrams$age_range))
+)
+```
+
+Below is a bar plot of the 20 most frequently used words in the survey responses:
+
+```{r}
+top_20_words <- cares_bot_unigrams %>%
+  count(tokens, sort = TRUE) %>%
+  mutate(word = reorder(tokens, n)) %>%
+  top_n(20) %>%
+  ggplot(aes(n, word)) +
+  geom_col() +
+  labs(x = "Number of Occurences",
+       y = NULL)
+
+top_20_words
+```
+
+Here, we see that "bills" is the most frequently occurring term in the survey responses, followed by "pay" and "food". In the middle of the plot, we also see words such as "hard", "struggling", and "difficult".
+
+Since we are only looking at individual words, we don't know the context in which these words appear. This will be addressed later when we tokenize the survey responses again, this time looking at "trigrams" or a set of three adjacent words.
+
+However, based on this plot, we do get an idea of what types of words are used when talking about the CARES Act.
+
+## The most frequently occurring words by income bracket
+
+```{r}
+top_10_words_by_income <- cares_bot_unigrams %>%
+  
+  # pytesseract likely interpreted a word incorrectly so let's filter it out as you caught it when you first made this graph
+  filter(tokens != "|had") %>%
+  group_by(income) %>%
+  
+  # Count occurences of each token for each income bracket
+  # and arrange the counts in descending order
+  count(tokens) %>%
+  arrange(desc(n)) %>%
+  
+  # Select the top 10 words as they appear
+  slice(1:10) %>%
+  ungroup() %>%
+  ggplot(aes(x = reorder(tokens, n), y = n)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~income, scales = "free") +
+  labs(y = "Number of Occurrences",
+       x = NULL)
+
+top_10_words_by_income
+```
+
+Based on the bar plot above, we see that "bills" and "pay" are the most frequently used words for all income brackets besides those whose income is between \$50,001 - \$75,000 or more than \$150,000. For those whose income is more than \$150,000, it makes sense that "bill" and "pay" aren't the most frequently used words as it's likely that the CARES Act didn't help these people. Moreover, words such as "summer", "paid", and "class" are the most frequently occurring words for this group, which could imply that the money received from the CARES Act helped pay for optional expenses.
+
+## The most frequently occurring words by age group
+
+```{r}
+top_10_words_by_age_group <- cares_bot_unigrams %>%
+  group_by(age_range) %>%
+  count(tokens) %>%
+  arrange(desc(n)) %>%
+  slice(1:10) %>%
+  ungroup() %>%
+  ggplot(aes(x = reorder(tokens, n), y = n)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~age_range, scales = "free") +
+  labs(y = "Number of Occurrences",
+       x = NULL)
+
+top_10_words_by_age_group
+```
+
+Similar to the plot that looked at what words each income bracket used to talk about the CARES Act, "bills" and "pay" are the most frequently occurring words for each age group, besides 55-64, where "food" occurs slightly than "bills" and "pay".
+
+Based on the plots we've created so far, we see that "bills" and "pay" tend to be the most frequently occurring words across age groups and income brackets. Indeed, this shouldn't be a surprise given the intent of the CARES Act.
+
+## Sentiment Analysis for income brackets and age groups
+
+When we read text, we can understand the emotions behinds words, sentences, phrases, passages, etc. While having a computer understand "emotion" behind language is an ongoing area of study that has proven challenging to implement, researchers have compiled lexicons of words and labeled them based on the emotions behind each word.
+
+One such lexicon is called `bing` from Bing Liu et. al. This lexicon classifies a word as either being positive or negative. Below is the first few rows of this dataset, which comes from the `tidytext` package in R:
+
+```{r}
+get_sentiments("bing")
+```
+
+Using `bing`, let's classify the overall sentiment for age group and income bracket, where sentiment is the difference between the number of positive and negative words for each age group and income bracket respectively:
+
+```{r}
+age_sentiment <- cares_bot_unigrams %>%
+  
+  # Join our dataset to bing and only return words that
+  # are present in both
+  inner_join(get_sentiments("bing"), 
+             by = c("tokens" = "word")) %>%
+  
+  # Count the number of positive and negative words for
+  # each age group
+  count(age_range, sentiment) %>%
+  
+  # Pivot the values in sentiment (positive and negative)
+  # as columns so we can compute the difference between
+  # each age group
+  tidyr::spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative) %>%
+  ggplot(aes(x = age_range, y = sentiment, fill = age_range)) +
+  geom_col() +
+  theme(legend.position = "top",
+        axis.text.x = element_blank()) +
+  labs(x = NULL,
+       y = "Sentiment",
+       fill = "Age Group") +
+  scale_fill_brewer(type = "qual", palette = "Paired")
+
+age_sentiment
+```
+
+Here, we see that all age groups use more "negative" than "positive" words when discussing the CARES Act, with the 35-44 age group using the most negative words. Now, this plot should not be interpreted as respondents saying negative things about the CARES Act. Indeed, it is more likely that the words they use to describe what the CARES Act has done for them and or how the CARES Act not being renewed has impacted are more "negative" as provisions within the bill were designed to alleviate financial hardship for Americans during the pandemic.
+
+We can do the same thing as above but for income brackets:
+
+```{r}
+# We want the order of the income levels to be in ascending order
+income_levels <- c("Income: Under $25,000","Income: $25,000 - $50,000","Income: $50,001 - $75,000", "Income: $75,001 - $100,000", "Income: $100,001 - $150,000")
+
+income_sentiment <- cares_bot_unigrams %>%
+  inner_join(get_sentiments("bing"), 
+             by = c("tokens" = "word")) %>%
+  count(income, sentiment) %>%
+  tidyr::spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative) %>%
+  ggplot(aes(x = factor(income, levels = income_levels), 
+             y = sentiment, fill = income)) +
+  geom_col() +
+  theme(legend.position = "top",
+        axis.text.x = element_blank()) +
+  labs(x = NULL,
+       y = "Sentiment",
+       fill = "Income") +
+  scale_fill_brewer(type = "qual", palette = "Paired")
+
+income_sentiment
+```
+
+Unsurprisingly, all income brackets but those who make more than \$150,000 use more negative than positive words in their responses, with those who make between \$25,000 - \$50,000 using the most negative words.
+
+## Examining trigrams instead of unigrams
+
+We noted at the start of the analysis that we only looked at individual words in each survey response. One issue with this approach is that the order and context in which words appear has an impact on the meaning of a word, phrase, or sentence. For instance, if we say "That test was difficult", we understand that the word "test" in this sentence refers to an examination and is a noun. If we only see the word "test", we are left without context and what part of speech "test" is (i.e. "test" can either be a noun or a verb depending on the sentence).
+
+To get a better understanding of the topics talked about in the survey responses, let's extract trigrams from each survey response. Since `spacy` doesn't have a built-in feature to create trigrams (or more generally n-grams), we'll use another popular library, `nltk` to tokenize our responses into trigrams:
+
+```{python}
+# Define a list of English stop words
+stop_words = stopwords.words('english')
+
+# Tokenize each response
+nltk_tokenizer = cares_bot_survey_data_extracted["response"].apply(word_tokenize)
+
+# Convert each token to lowercase and remove any stop words, punctuation, and other characters that we don't want in our analysis 
+def remove_stop_words(tokens):
+  lowercase_tokens = [token.lower() for token in tokens]
+  return [token for token in lowercase_tokens if token not in stop_words and token.isalnum() and token not in ("1", "|", "|had")]
+  
+tokens = nltk_tokenizer.apply(remove_stop_words)
+
+# Extract trigrams from the tokenized responses
+trigrams = tokens.apply(lambda x: list(ngrams(x, 3)))
+trigrams.head()
+```
+
+```{python}
+# Like we did with unigrams, create a deep copy of our data and assign the trigrams to a new column in the newly created dataframe
+cares_bot_trigrams = cares_bot_survey_data_extracted.copy()
+cares_bot_trigrams["trigrams"] = trigrams
+cares_bot_trigrams["trigrams"].head()
+```
+
+```{python}
+# Add in age groups
+cares_bot_trigrams["age_range"] = pd.cut(cares_bot_trigrams["age"], 
+  bins=[17, 24, 34, 44, 54, 64, np.inf],
+  labels=["18-24", "25-34", "35-44",
+          "45-54", "55-64", "65+"])
+                                               
+cares_bot_trigrams["age_range"].head()
+```
+
+Unfortunately, we can't use `DataFrame.explode()` when working with trigrams as it'll unnest each trigram into individual words. Below, we get around this issue:
+
+```{python}
+# Get the number of trigrams present in each row
+num_trigrams_per_row = cares_bot_trigrams["trigrams"].apply(lambda x: len(x)).values
+
+# Create an index, where the index number is replicated for as many trigrams there are in a given row
+trigrams_index = np.repeat(cares_bot_trigrams.index, num_trigrams_per_row)
+
+# Create a new DataFrame using the index we created above
+cares_bot_trigrams_final = pd.DataFrame(index=trigrams_index)
+
+unnested_trigrams = []
+
+# Loop through trigrams, extract each individual trigram,
+# and each trigram to a list
+for row in cares_bot_trigrams["trigrams"]:
+  for trigram in row:
+    unnested_trigrams.append(trigram)
+    
+# Add the trigrams to the newly created DataFrame
+cares_bot_trigrams_final["trigrams"] = pd.Series(unnested_trigrams, index=trigrams_index)
+
+# Get the data from the original DataFrame and merge based on index
+cares_bot_trigrams_final = pd.merge(cares_bot_trigrams_final, cares_bot_trigrams.drop("trigrams", axis=1), left_index=True, right_index=True)
+```
+
+Let's look at the first few rows to make sure that everything looks OK:
+
+```{python}
+cares_bot_trigrams_final.head()
+```
+
+Next, let's do what we did before and pull this `DataFrame` into R:
+
+```{r}
+cares_bot_trigrams <- tibble(py$cares_bot_trigrams_final)
+unnested_trigrams <- list()
+
+# Again, R will complain about the duplicated index and
+# will create a list column for the trigrams
+for (i in seq_along(cares_bot_trigrams$trigrams)) {
+  
+  # First, flatten the given list and then concatenate
+  # the resulting character vector of three words into
+  # one string
+  unnested_trigrams[[i]] <- stringr::str_c(unlist(cares_bot_trigrams$trigrams[[i]]), collapse = ", ")
+}
+
+cares_bot_trigrams$trigrams <- unlist(unnested_trigrams)
+```
+
+```{r}
+head(cares_bot_trigrams)
+```
+
+## Most frequently occurring trigrams
+
+Below is a bar plot of the twenty most frequently occurring trigrams:
+
+```{r}
+top_20_trigrams <- cares_bot_trigrams %>%
+  count(trigrams, sort = TRUE) %>%
+  top_n(20) %>%
+  ggplot(aes(x = reorder(trigrams, n), y = n)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = NULL,
+       y = "Number of Occurrences")
+
+top_20_trigrams
+```
+
+Here, we notice that the trigrams give us more insight into the survey responses. For instance, the phrase "makes ends meet" gives us more understanding about how people view the impact of the CARES Act than ant of the individual words.
+
+"Bills" frequently appeared in our analysis when we only looked at unigrams. Here, we get more context in how "bills" is being used. Indeed, the plot appears to show that that the CARES Act has helped respondents pay bills or that it not being renewed would cause respondents to struggle paying bills.
+
+## Most frequently occurring trigrams by age group
+
+```{r}
+age_top_10_trigrams <- cares_bot_trigrams %>%
+  group_by(age_range) %>%
+  count(trigrams) %>%
+  arrange(desc(n)) %>%
+  slice(1:10) %>%
+  ungroup() %>%
+  ggplot(aes(x = reorder(trigrams, n), y = n)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = NULL,
+       y = "Number of Occurrences") +
+  facet_wrap(~age_range, scales = "free")
+
+age_top_10_trigrams
+```
+
+Here, we can see differences between our unigram analysis of age groups and our trigram analysis. For instance, while "bills" was a frequently used word, we see that it's dominance is muted when we look at what words it's adjacent to. For 18-24 year-olds, their top ten trigrams are equal to one another but we also see that this age group is likely talking about paying for "monthly subscriptions" or affording food. These trigrams differ when we look at the 65+ age group, where they talk about doctors visits, bills, and debt.
+
+Finally, let's look at the top ten trigrams for each income bracket:
+
+```{r}
+income_top_10_trigrams <- cares_bot_trigrams %>%
+  group_by(income) %>%
+  count(trigrams) %>%
+  arrange(desc(n)) %>%
+  slice(1:10) %>%
+  ungroup() %>%
+  ggplot(aes(x = reorder(trigrams, n), y = n)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = NULL,
+       y = "Number of Occurrences") +
+  facet_wrap(~income, scales = "free")
+
+income_top_10_trigrams
+```
+
+Here, we do see more of a divide between those who have a higher income compared to those who don't. Those who make between \$100,001 - \$150,000 or more than \$150,000 don't mention bills, instead likely talking about paying for summer class or going on vacation. However, those in the \$100,001 - \$150,000 income bracket do mention the word "stress" in their responses and some who make more than \$150,000 do bring up income loss (perhaps these respondents recently got laid off).
+
+## Conclusion
+
+While not as easy to work with compared to numeric data, analyzing text data can yield powerful insights. Using survey responses from Data For Progress, we were able to better understand the words respondents used to talk about the impact of the CARES Act on their lives and get an idea of what kinds of words different age groups and income brackets use.
+
+While this analysis only looked at unigrams, trigrams, and sentiment based on the difference between the number of positive and negative words, it does open the door for more analysis of this data. For instance, perhaps we can classify the sentiment of sentences instead of unigrams, which could give us a better idea of how people feel about the CARES Act. Or, we could examine how sentences are structured for different demographics. Again, this analysis should be viewed as the first step in more text analysis being applied to survey responses.
+
+## Appendix
+
+```{python}
+# Write out the unigrams and trigrams datasets to CSV files
+cares_bot_unigrams.to_csv("C:/Users/Rober/DATS_6103/project_2/data/cares_bot_unigrams.csv", index=False)
+cares_bot_trigrams.to_csv("C:/Users/Rober/DATS_6103/project_2/data/cares_bot_trigrams.csv", index=False)
+```
