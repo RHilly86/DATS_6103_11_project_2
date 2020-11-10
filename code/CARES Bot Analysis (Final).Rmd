@@ -109,7 +109,7 @@ Through some trial and error, we settled on the following regular expressions:
 
 -   `response: (?<=\?) (.*) Age` - Extract any characters that follow a question mark.
 
--   `age: Age: (\d+)`  - Extract the respondent's age (i.e. we want to extract the number "65" from "Age: 65".
+-   `age: Age: (\d+)` - Extract the respondent's age (i.e. we want to extract the number "65" from "Age: 65".
 
 -   `income: Income: [Under|More than|\$]*\d+,?\d+ [-? \$\d+,?\d+]*` - Extract the respondent's income bracket. While all income brackets are preceded by "Income:", they can either be followed by "Under", "More than" or a "\$". To account for this, we create a character class with square brackets and add a `*`, telling Python that we want to match this pattern zero or more times. The next part of the regular expression will capture income brackets that don't have a range (i.e. Under \$25,000 or More than \$150,000), while the last part will capture the upper bound of an income bracket (i.e. \$50,001 - \$75,000).
 
@@ -565,9 +565,9 @@ Here, we do see more of a divide between those who have a higher income compared
 
 ## Conclusion
 
-While not as easy to work with compared to numeric data, analyzing text data can yield powerful insights. Using survey responses from Data For Progress, we were able to better understand the words respondents used to talk about the impact of the CARES Act on their lives and get an idea of what kinds of words different age groups and income brackets use.
+While not as easy to work with compared to numeric data, analyzing text data can yield powerful insights. Using survey responses from Data For Progress, we were able to better understand the words respondents used to talk about the impact of the CARES Act on their lives and get an idea that respondents are concerned about paying bills and that different age groups and income brackets use words that are based on their respective financial and life situations.
 
-While this analysis only looked at unigrams, trigrams, and sentiment based on the difference between the number of positive and negative words, it does open the door for more analysis of this data. For instance, perhaps we can classify the sentiment of sentences instead of unigrams, which could give us a better idea of how people feel about the CARES Act. Or, we could examine how sentences are structured for different demographics. Again, this analysis should be viewed as the first step in more text analysis being applied to survey responses.
+While this analysis only looked at unigrams, trigrams, and sentiment based on the difference between the number of positive and negative words, it can certainly be built upon. For instance, perhaps we can classify the sentiment of sentences instead of unigrams, which could give us a better idea of how people feel about the CARES Act. Or, we could examine how sentences are structured for different demographics. Again, this analysis should be viewed as a first step in text analysis being applied to survey responses more generally.
 
 ## Appendix
 
